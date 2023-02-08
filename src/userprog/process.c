@@ -81,47 +81,47 @@ static bool c_is_space(char c){
 void* set_main_stack(char* file_name){
   int fnlen = strlen(file_name);
 
-    /* Push strings into stack. */
-    char* stresp = PHYS_BASE;
-    for(int itr = fnlen; itr >=0; itr--){
-      if(c_is_space(file_name[itr])){
-        *(--stresp) = '\0';
-        while(c_is_space(file_name[itr])&&itr >=0)
-          itr--;
-        if(itr < 0) break;
-      }
-      if(!c_is_space(file_name[itr])){
-        *(--stresp) = file_name[itr];
-      }
+  /* Push strings into stack. */
+  char* stresp = PHYS_BASE;
+  for(int itr = fnlen; itr >=0; itr--){
+    if(c_is_space(file_name[itr])){
+      *(--stresp) = '\0';
+      while(c_is_space(file_name[itr])&&itr >=0)
+        itr--;
+      if(itr < 0) break;
     }
-    char* strs = stresp;
-
-    /* Push string ptrs and get args. */
-    int argc = 0;
-    char** argv=NULL;
-    char** sptr_esp = (char**)stresp;
-    *(--sptr_esp) = NULL;
-    for(char* cptr = (char*)PHYS_BASE-1; cptr >=strs; cptr--){
-      if(*(cptr-1) == '\0'){
-        *(--sptr_esp) = cptr;
-        argc++;
-      }
+    if(!c_is_space(file_name[itr])){
+      *(--stresp) = file_name[itr];
     }
-    argv = sptr_esp;
-    
-    /* Stack align. */
-    int mask = (int)argv&0xf;
-    int subbyte = mask < 0x8 ? mask + 0x10 - 0x8 : mask - 0x8;
-    void* args = (void*)((int)sptr_esp - subbyte);
+  }
+  char* strs = stresp;
 
-    /* Push args and eip(null), set esp. */
-    char*** argvptr = (char***)args-1;
-    int* argcptr = (int*)argvptr-1;
-    *argvptr = argv;
-    *argcptr = argc;
-    void** ret = (void**)argcptr -1;
-    *ret = NULL;
-    return ret;
+  /* Push string ptrs and get args. */
+  int argc = 0;
+  char** argv=NULL;
+  char** sptr_esp = (char**)stresp;
+  *(--sptr_esp) = NULL;
+  for(char* cptr = (char*)PHYS_BASE-1; cptr >=strs; cptr--){
+    if(*(cptr-1) == '\0'){
+      *(--sptr_esp) = cptr;
+      argc++;
+    }
+  }
+  argv = sptr_esp;
+  
+  /* Stack align. */
+  int mask = (int)argv&0xf;
+  int subbyte = mask < 0x8 ? mask + 0x10 - 0x8 : mask - 0x8;
+  void* args = (void*)((int)sptr_esp - subbyte);
+
+  /* Push args and eip(null), set esp. */
+  char*** argvptr = (char***)args-1;
+  int* argcptr = (int*)argvptr-1;
+  *argvptr = argv;
+  *argcptr = argc;
+  void** ret = (void**)argcptr -1;
+  *ret = NULL;
+  return ret;
 }
 
 /* A thread function that loads a user process and starts it
