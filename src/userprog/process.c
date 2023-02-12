@@ -157,7 +157,8 @@ pid_t process_execute(const char* file_name) {
   tid = thread_create(file_name, PRI_DEFAULT, start_process, &aux);
   if (tid == TID_ERROR)
     palloc_free_page(fn_copy);
-	sema_down(&lock);
+	else
+		sema_down(&lock);
   return tid;
 }
 
