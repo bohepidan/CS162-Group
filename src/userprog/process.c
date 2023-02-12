@@ -20,11 +20,92 @@
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 
-static struct semaphore temporary;
+enum process_status{
+	PROCESS_CREATING,
+	PROCESS_ALIVE,
+	PROCESS_DEAD
+};
+struct process_child{
+	pid_t cpid;
+	struct list_elem elem;
+};
+/* Process Control Structure/Semaphore.
+
+*/
+struct pcs{
+	pid_t pid;
+	bool is_waited; 							//true if is waiting by parent
+	struct process* pcb;					// ident process
+	struct process* parent;				// parent pcb
+	enum process_status state;  
+	int exit_status; 							//status of exit()
+  struct semaphore lock; 	//Up() when a child process exit, Down() in wait(). 
+  struct list_elem allelem;			//list elem in all_process list
+};
+
+static struct list all_process = LIST_INITIALIZER(all_process);
 static thread_func start_process NO_RETURN;
 static thread_func start_pthread NO_RETURN;
 static bool load(const char* file_name, void (**eip)(void), void** esp);
 bool setup_thread(void (**eip)(void), void** esp);
+void pcs_add(struct pcs* p, pid_t pid, struct process* pcb, struct process* parent, enum process_status state);
+struct pcs* get_pcs(pid_t pid);
+void pcs_deactivate(struct pcs* p, int exit_status);
+
+// Find the pcs corresponding to the given pid, return NULL if cannot find
+struct pcs* get_pcs(pid_t pid){
+	struct list_elem *e;
+	for (e = list_begin (&all_process); e != list_end (&all_process); e = list_next (e)){
+		struct pcs* itr = list_entry(e, struct pcs, allelem);
+		if(itr->pid == pid){
+			return itr;
+		}
+	}
+	return NULL;
+}
+
+/* Initialize a pcs.
+	Sometimes we want to add an dead process to pass message to its parent(and it doesn't have a pcb), 
+	so we need to pass it's pid and pass pcb as null ptr. */
+void pcs_add(struct pcs* p, pid_t pid, struct process* pcb, struct process* parent, enum process_status state){
+	ASSERT(p != NULL);
+	p->pcb = pcb;
+	p->parent = parent;
+	p->state = state;
+	p->pid = pid;
+	p->is_waited = false;
+	sema_init(&p->lock, 0);
+
+	/* Push to the all list */
+  enum intr_level old_level = intr_disable();
+  list_push_back(&all_process, &p->allelem);
+  intr_set_level(old_level);
+}
+
+/* Deactivate a pcs, used when a process exit or is killed. */
+void pcs_deactivate(struct pcs* p, int exit_status){
+/* A PCS can be released when its parent is also dead.
+	i.e. when its exit information is no longer required. */
+	ASSERT(p != NULL);
+	if(!p->parent || get_pcs(get_pid(p->parent))->state == PROCESS_DEAD){
+		enum intr_level old_level = intr_disable();
+		list_remove(&p->allelem);
+		intr_set_level(old_level);
+
+		struct list_elem *e;
+		for (e = list_begin (&all_process); e != list_end (&all_process); e = list_next (e)){
+			struct pcs* itr = list_entry(e, struct pcs, allelem);
+			if(itr->parent == p->pcb)
+				itr->parent = NULL;
+		}
+		free(p);
+		return ;
+	}
+
+	p->pcb = NULL;
+	p->exit_status = exit_status;
+	p->state = PROCESS_DEAD;
+}
 
 /* Initializes user programs in the system by ensuring the main
    thread has a minimal PCB so that it can execute and wait for
@@ -42,9 +123,20 @@ void userprog_init(void) {
   t->pcb = calloc(sizeof(struct process), 1);
   success = t->pcb != NULL;
 
+	struct pcs* p = malloc(sizeof(struct pcs));
+	success = p != NULL;
+
   /* Kill the kernel if we did not succeed */
   ASSERT(success);
+	t->pcb->main_thread = t;
+	pcs_add(p, t->tid, t->pcb, NULL, PROCESS_ALIVE);
 }
+
+struct start_process_aux{
+	char* name;
+	struct process* parent;
+	struct semaphore* lock;
+};
 
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
@@ -53,8 +145,10 @@ void userprog_init(void) {
 pid_t process_execute(const char* file_name) {
   char* fn_copy;
   tid_t tid;
+	//This lock is to ensure when exit() completed, a pcs is added to the all list.
+	struct semaphore lock;
 
-  sema_init(&temporary, 0);
+  sema_init(&lock, 0);
   /* Make a copy of FILE_NAME.
      Otherwise there's a race between the caller and load(). */
   fn_copy = palloc_get_page(0);
@@ -62,10 +156,14 @@ pid_t process_execute(const char* file_name) {
     return TID_ERROR;
   strlcpy(fn_copy, file_name, PGSIZE);
 
+	/* Set the aux for start_process */
+	struct start_process_aux aux = {fn_copy, thread_current()->pcb, &lock};
+
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create(file_name, PRI_DEFAULT, start_process, fn_copy);
+  tid = thread_create(file_name, PRI_DEFAULT, start_process, &aux);
   if (tid == TID_ERROR)
     palloc_free_page(fn_copy);
+	sema_down(&lock);
   return tid;
 }
 
@@ -126,8 +224,11 @@ void* set_main_stack(char* file_name){
 
 /* A thread function that loads a user process and starts it
    running. */
-static void start_process(void* file_name_) {
-  char* file_name = (char*)file_name_;
+static void start_process(void* aux) {
+	struct start_process_aux* args = aux;
+  char* file_name = args->name;
+	struct process* parent = args->parent;
+	struct semaphore* lock = args->lock;
   struct thread* t = thread_current();
   struct intr_frame if_;
   bool success, pcb_success;
@@ -148,6 +249,11 @@ static void start_process(void* file_name_) {
     strlcpy(t->pcb->process_name, t->name, sizeof t->name);
   }
 
+	struct pcs* new_pcs = malloc(sizeof(struct pcs));
+	/* How to gracefully deal with the failure of malloc pcs? */
+	ASSERT(new_pcs != NULL);
+	pcs_add(new_pcs, t->tid, t->pcb, parent, PROCESS_CREATING);
+
   /* Initialize interrupt frame and load executable. */
   if (success) {
     memset(&if_, 0, sizeof if_);
@@ -159,6 +265,9 @@ static void start_process(void* file_name_) {
   /* If load succeed, set the stack. */
   if(success){
     if_.esp = set_main_stack(file_name);
+		new_pcs->state = PROCESS_ALIVE;
+		//PCS create completed, exec() can complete.
+		sema_up(lock);
   }
 
   /* Handle failure with succesful PCB malloc. Must free the PCB */
@@ -174,7 +283,11 @@ static void start_process(void* file_name_) {
   /* Clean up. Exit on failure or jump to userspace */
   palloc_free_page(file_name);
   if (!success) {
-    sema_up(&temporary);
+		//Not success, deactivate current process and quit exec().
+		struct pcs* p = get_pcs(t->tid);
+		pcs_deactivate(p, -1);
+		sema_up(lock);
+		sema_up(&p->lock);
     thread_exit();
   }
 
@@ -197,13 +310,34 @@ static void start_process(void* file_name_) {
 
    This function will be implemented in problem 2-2.  For now, it
    does nothing. */
-int process_wait(pid_t child_pid UNUSED) {
-  sema_down(&temporary);
-  return 0;
+int process_wait(pid_t child_pid) {
+	struct thread *t = thread_current();
+	struct pcs* p;
+
+	/* Find child process in all list */
+	p = get_pcs(child_pid);
+	// Invalid or is not a child
+	if(p == NULL && p->parent != t->pcb)
+		return -1;
+
+	if(p->state == PROCESS_DEAD)
+		return p->exit_status;
+
+  enum intr_level old_level = intr_disable();
+	if(p->is_waited)
+		return -1;
+	else 
+		p->is_waited = true;
+  intr_set_level(old_level);
+
+	sema_down(&p->lock);
+	p->is_waited = false;
+
+  return p->exit_status;
 }
 
 /* Free the current process's resources. */
-void process_exit(void) {
+void process_exit(int status) {
   struct thread* cur = thread_current();
   uint32_t* pd;
 
@@ -233,11 +367,15 @@ void process_exit(void) {
      Avoid race where PCB is freed before t->pcb is set to NULL
      If this happens, then an unfortuantely timed timer interrupt
      can try to activate the pagedir, but it is now freed memory */
+
+	pid_t pid = get_pid(cur->pcb);
+	pcs_deactivate(get_pcs(pid), status);
+
   struct process* pcb_to_free = cur->pcb;
   cur->pcb = NULL;
   free(pcb_to_free);
 
-  sema_up(&temporary);
+  sema_up(&get_pcs(pid)->lock);
   thread_exit();
 }
 

@@ -19,11 +19,34 @@ static void syscall_handler(struct intr_frame* f UNUSED) {
    * include it in your final submission.
    */
 
-  /* printf("System call number: %d\n", args[0]); */
+  printf("System call number: %d\n", args[0]);
 
+  switch(args[0]){
+    case SYS_EXIT:
+      f->eax = args[1];
+      printf("%s: exit(%d)\n", thread_current()->pcb->process_name, args[1]);
+      process_exit(args[1]);
+      break;
+    case SYS_PRACTICE:
+      f->eax = args[1]+1;
+      break;
+    case SYS_HALT:
+      shutdown_power_off();
+      break;
+    case SYS_EXEC: ;
+      const char* cmd_line = (char*)args[1];
+      f->eax = process_execute(cmd_line);
+      break;
+    case SYS_WAIT: ;
+      pid_t pid = args[1];
+      f->eax = process_wait(pid);
+      break;
+  }
+  /*
   if (args[0] == SYS_EXIT) {
     f->eax = args[1];
     printf("%s: exit(%d)\n", thread_current()->pcb->process_name, args[1]);
     process_exit();
   }
+  */
 }
