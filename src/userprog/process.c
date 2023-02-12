@@ -25,13 +25,7 @@ enum process_status{
 	PROCESS_ALIVE,
 	PROCESS_DEAD
 };
-struct process_child{
-	pid_t cpid;
-	struct list_elem elem;
-};
-/* Process Control Structure/Semaphore.
-
-*/
+/* Process Control Structure/Semaphore.*/
 struct pcs{
 	pid_t pid;
 	bool is_waited; 							//true if is waiting by parent
@@ -124,7 +118,7 @@ void userprog_init(void) {
   success = t->pcb != NULL;
 
 	struct pcs* p = malloc(sizeof(struct pcs));
-	success = p != NULL;
+	success &= p != NULL;
 
   /* Kill the kernel if we did not succeed */
   ASSERT(success);
