@@ -238,6 +238,7 @@ static void start_process(void* aux) {
     // does not try to activate our uninitialized pagedir
     new_pcb->pagedir = NULL;
     t->pcb = new_pcb;
+    list_init(&t->pcb->file_table);
 
     // Continue initializing the PCB as normal
     t->pcb->main_thread = t;
@@ -318,6 +319,7 @@ int process_wait(pid_t child_pid) {
 	if(p->state == PROCESS_DEAD)
 		return p->exit_status;
 
+	/* Avoid bad concurrency. ensure only one thread waits for PID. */
   enum intr_level old_level = intr_disable();
 	if(p->is_waited)
 		return -1;
