@@ -42,12 +42,12 @@ static thread_func start_process NO_RETURN;
 static thread_func start_pthread NO_RETURN;
 static bool load(const char* file_name, void (**eip)(void), void** esp);
 bool setup_thread(void (**eip)(void), void** esp);
-void pcs_add(struct pcs* p, pid_t pid, struct process* pcb, struct process* parent, enum process_status state);
-struct pcs* get_pcs(pid_t pid);
-void pcs_deactivate(struct pcs* p, int exit_status);
+static void pcs_add(struct pcs* p, pid_t pid, struct process* pcb, struct process* parent, enum process_status state);
+static struct pcs* get_pcs(pid_t pid);
+static void pcs_deactivate(struct pcs* p, int exit_status);
 
 // Find the pcs corresponding to the given pid, return NULL if cannot find
-struct pcs* get_pcs(pid_t pid){
+static struct pcs* get_pcs(pid_t pid){
 	struct list_elem *e;
 	for (e = list_begin (&all_process); e != list_end (&all_process); e = list_next (e)){
 		struct pcs* itr = list_entry(e, struct pcs, allelem);
@@ -61,7 +61,7 @@ struct pcs* get_pcs(pid_t pid){
 /* Initialize a pcs.
 	Sometimes we want to add an dead process to pass message to its parent(and it doesn't have a pcb), 
 	so we need to pass it's pid and pass pcb as null ptr. */
-void pcs_add(struct pcs* p, pid_t pid, struct process* pcb, struct process* parent, enum process_status state){
+static void pcs_add(struct pcs* p, pid_t pid, struct process* pcb, struct process* parent, enum process_status state){
 	ASSERT(p != NULL);
 	p->pcb = pcb;
 	p->parent = parent;
@@ -77,10 +77,13 @@ void pcs_add(struct pcs* p, pid_t pid, struct process* pcb, struct process* pare
 }
 
 /* Deactivate a pcs, used when a process exit or is killed. */
-void pcs_deactivate(struct pcs* p, int exit_status){
+static void pcs_deactivate(struct pcs* p, int exit_status){
 /* A PCS can be released when its parent is also dead.
 	i.e. when its exit information is no longer required. */
 	ASSERT(p != NULL);
+  struct file* f = filesys_open(p->pcb->process_name);
+  file_allow_write(f);
+  file_close(f);
 	if(!p->parent || get_pcs(get_pid(p->parent))->state == PROCESS_DEAD){
 		enum intr_level old_level = intr_disable();
 		list_remove(&p->allelem);
@@ -228,6 +231,13 @@ static void start_process(void* aux) {
   struct intr_frame if_;
   bool success, pcb_success;
 
+  /* Get the executable name */
+  char *exefile, *c;
+  for(c = file_name; *c != ' ' && *c; c++) ;
+  exefile = malloc(sizeof(char)*(c-file_name+1));
+  ASSERT(exefile != NULL);
+  strlcpy(exefile, file_name, c-file_name+1);
+
   /* Allocate process control block */
   struct process* new_pcb = malloc(sizeof(struct process));
   success = pcb_success = new_pcb != NULL;
@@ -243,7 +253,7 @@ static void start_process(void* aux) {
 
     // Continue initializing the PCB as normal
     t->pcb->main_thread = t;
-    strlcpy(t->pcb->process_name, t->name, sizeof t->name);
+    strlcpy(t->pcb->process_name, exefile, sizeof t->name);
   }
 
 	struct pcs* new_pcs = malloc(sizeof(struct pcs));
@@ -257,7 +267,7 @@ static void start_process(void* aux) {
     if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
     if_.cs = SEL_UCSEG;
     if_.eflags = FLAG_IF | FLAG_MBS;
-    success = load(file_name, &if_.eip, &if_.esp);
+    success = load(exefile, &if_.eip, &if_.esp);
   }
   /* If load succeed, set the stack. */
   if(success){
@@ -278,6 +288,7 @@ static void start_process(void* aux) {
   }
 
   /* Clean up. Exit on failure or jump to userspace */
+  free(exefile);
   palloc_free_page(file_name);
   if (!success) {
 		//Not success, deactivate current process and quit exec().
@@ -553,6 +564,8 @@ bool load(const char* file_name, void (**eip)(void), void** esp) {
 
 done:
   /* We arrive here whether the load is successful or not. */
+  if(success)
+    file_deny_write(file);
   file_close(file);
   return success;
 }
