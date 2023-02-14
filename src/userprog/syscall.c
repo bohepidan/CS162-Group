@@ -10,9 +10,7 @@
 #include "filesys/file.h"
 #include "devices/input.h"
 #include "kernel/console.h"
-
-#define STDIN_FILENO 0
-#define STDOUT_FILENO 1
+#include "devices/shutdown.h"
 
 static void syscall_handler(struct intr_frame*);
 
@@ -111,6 +109,27 @@ int write(int fd, const void* buffer, unsigned size){
   return file_write(file, buffer, size);
 }
 
+/*Changes the next byte to be read or written in 
+ open file fd to position, expressed in bytes from the beginning of the file. 
+ Thus, a position of 0 is the file’s start. */
+void seek(int fd, unsigned position){
+  struct file* f = get_file(fd);
+  if(f == NULL) return ;
+  file_seek(f, position);
+}
+
+unsigned tell(int fd){
+  struct file* f = get_file(fd);
+  if(f == NULL) return 0;
+  return file_tell(f);
+}
+
+void close(int fd){
+  struct file* f = get_file(fd);
+  if(f == NULL) return ;
+  file_close(f);
+}
+
 static void syscall_handler(struct intr_frame* f UNUSED) {
   uint32_t* args = ((uint32_t*)f->esp);
 
@@ -170,6 +189,19 @@ static void syscall_handler(struct intr_frame* f UNUSED) {
     const void* buffer = (void*)args[2];
     unsigned size = args[3];
     f->eax = write(fd, buffer, size);
+  }
+  else if (args[0] == SYS_SEEK){
+    int fd = args[1];
+    unsigned position = args[2];
+    seek(fd, position);
+  }
+  else if (args[0] == SYS_TELL){
+    int fd = args[1];
+    f->eax = tell(fd);
+  }
+  else if (args[0] == SYS_CLOSE){
+    int fd = args[1];
+    close(fd);
   }
 
 }
