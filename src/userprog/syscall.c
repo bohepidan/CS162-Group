@@ -6,11 +6,44 @@
 #include "userprog/process.h"
 #include "filesys/filesys.h"
 #include "threads/malloc.h"
+#include "filesys/inode.h"
+#include "filesys/file.h"
+#include "devices/input.h"
+#include "kernel/console.h"
+
+#define STDIN_FILENO 0
+#define STDOUT_FILENO 1
 
 static void syscall_handler(struct intr_frame*);
 
 void syscall_init(void) { intr_register_int(0x30, 3, INTR_ON, syscall_handler, "syscall"); }
-int open(const char* name);
+
+static struct file_d* get_file_d(int fd);
+static struct file* get_file(int fd);
+
+// Return the file_d structure of fd, or NULL if fd not exist.
+static struct file_d* get_file_d(int fd){
+  struct process* pcb = thread_current()->pcb;
+  struct list_elem* e;
+  struct file_d* file = NULL;
+  lock_acquire(&pcb->ftlock);
+  for(e = list_begin(&pcb->file_table); e != list_end(&pcb->file_table); e = list_next(e)){
+    struct file_d* f = list_entry(e, struct file_d, elem);
+    if(f->fd == fd){
+      file = f;
+      break;
+    }
+  }
+  lock_release(&pcb->ftlock);
+  return file;
+}
+
+// Return the file of fd, or NULL if fd not exist.
+static struct file* get_file(int fd){
+  struct file_d* f = get_file_d(fd);
+  if(f == NULL) return NULL;
+  return f->file;
+}
 
 /* Opens the file named file. Returns a nonnegative
  integer handle called a “file descriptor” (fd), or -1
@@ -24,10 +57,58 @@ int open(const char* name) {
   struct file_d* newfd = malloc(sizeof * newfd);
   if (newfd == NULL) return -1;
 
+  newfd->file = file;
   if (list_empty(&pcb->file_table)) {
+    newfd->fd = 2;
+  }else{
+    struct file_d* back = list_entry(list_back(&pcb->file_table), struct file_d, elem);
+    newfd->fd = back->fd + 1;
+  }
+  lock_acquire(&pcb->ftlock);
+  list_push_back(&pcb->file_table, &newfd->elem);
+  lock_release(&pcb->ftlock);
+  return newfd->fd;
+}
 
+/* Returns the size, in bytes, of the open file with file descriptor fd.
+  or return -1 if fd not exist. */
+int filesize(int fd){
+  struct file* file = get_file(fd);
+  if(file == NULL) return -1;
+
+  return inode_length(file_get_inode(file));
+}
+
+/* Reads size bytes from the file open as fd into buffer.
+  Returns the number of bytes actually read (0 at end of file), 
+  or -1 if the file could not be read (due to a condition other than end of file).*/
+int read(int fd, void* buffer, unsigned size){
+  // Read from stdin.
+  if(fd == STDIN_FILENO){
+    for(uint8_t* c = buffer; c < (uint8_t*)buffer+size; c++){
+      *c = input_getc();
+    }
+    return size;
   }
 
+  struct file* file = get_file(fd);
+  if(file == NULL) return -1;
+
+  return file_read(file, buffer, size);
+}
+
+/* Writes size bytes from buffer to the open file with file descriptor fd.
+  Returns the number of bytes actually written, or -1 if failed. */
+int write(int fd, const void* buffer, unsigned size){
+  if(fd == STDOUT_FILENO){
+    putbuf(buffer, size);
+    return size;
+  }
+
+  struct file* file = get_file(fd);
+  if(file == NULL) return -1;
+
+  return file_write(file, buffer, size);
 }
 
 static void syscall_handler(struct intr_frame* f UNUSED) {
@@ -40,7 +121,7 @@ static void syscall_handler(struct intr_frame* f UNUSED) {
    * include it in your final submission.
    */
 
-  printf("System call number: %d\n", args[0]);
+  //printf("System call number: %d\n", args[0]);
 
   if (args[0] == SYS_EXIT) {
     f->eax = args[1];
@@ -73,6 +154,22 @@ static void syscall_handler(struct intr_frame* f UNUSED) {
   else if (args[0] == SYS_OPEN) {
     const char* file = (char*)args[1];
     f->eax = open(file);
+  }
+  else if (args[0] == SYS_FILESIZE){
+    int fd = args[1];
+    f->eax = filesize(fd);
+  }
+  else if (args[0] == SYS_READ){
+    int fd = args[1];
+    void* buffer = (void*)args[2];
+    unsigned size = args[3];
+    f->eax = read(fd, buffer, size);
+  }
+  else if (args[0] == SYS_WRITE){
+    int fd = args[1];
+    const void* buffer = (void*)args[2];
+    unsigned size = args[3];
+    f->eax = write(fd, buffer, size);
   }
 
 }

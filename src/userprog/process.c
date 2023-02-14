@@ -239,6 +239,7 @@ static void start_process(void* aux) {
     new_pcb->pagedir = NULL;
     t->pcb = new_pcb;
     list_init(&t->pcb->file_table);
+    lock_init(&t->pcb->ftlock);
 
     // Continue initializing the PCB as normal
     t->pcb->main_thread = t;

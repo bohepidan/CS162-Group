@@ -17,8 +17,9 @@ typedef tid_t pid_t;
 typedef void (*pthread_fun)(void*);
 typedef void (*stub_fun)(pthread_fun, void*);
 
+//File description
 struct file_d{
-   int fd;        //file descriptor
+   int fd;        //File descriptor
    struct file* file;
    struct list_elem elem;
 };
@@ -34,6 +35,7 @@ struct process {
   char process_name[16];      /* Name of the main thread */
   struct thread* main_thread; /* Pointer to main thread */
   struct list file_table;
+  struct lock ftlock;
 };
 
 void userprog_init(void);
