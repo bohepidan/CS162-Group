@@ -78,12 +78,27 @@ static void pcs_add(struct pcs* p, pid_t pid, struct process* pcb, struct proces
 
 /* Deactivate a pcs, used when a process exit or is killed. */
 static void pcs_deactivate(struct pcs* p, int exit_status){
-/* A PCS can be released when its parent is also dead.
-	i.e. when its exit information is no longer required. */
 	ASSERT(p != NULL);
+  
+  /* Allow write to exefile. */
   struct file* f = filesys_open(p->pcb->process_name);
   file_allow_write(f);
   file_close(f);
+
+  /* Close all open files. */
+  struct process* pcb = p->pcb;
+  lock_acquire(&pcb->ftlock);
+  for (e = list_begin (&pcb->file_table); e != list_end (&pcb->file_table); e = list_next (e)){
+    struct file_d* f = list_entry(e, struct file_d, elem);
+    file_close(f->file);
+  }
+  while(!list_empty(&pcb->file_table)){
+    free(list_entry(list_pop_back(&pcb->file_table), struct file_d, elem));
+  }
+  lock_release(&pcb->ftlock);
+
+/* A PCS can be released when its parent is also dead.
+	i.e. when its exit information is no longer required. */
 	if(!p->parent || get_pcs(get_pid(p->parent))->state == PROCESS_DEAD){
 		enum intr_level old_level = intr_disable();
 		list_remove(&p->allelem);

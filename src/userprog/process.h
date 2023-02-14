@@ -34,8 +34,8 @@ struct process {
   uint32_t* pagedir;          /* Page directory. */
   char process_name[16];      /* Name of the main thread */
   struct thread* main_thread; /* Pointer to main thread */
-  struct list file_table;
-  struct lock ftlock;
+  struct list file_table;     /* File table. */
+  struct lock ftlock;         /* Lock for File table. */
 };
 
 void userprog_init(void);
