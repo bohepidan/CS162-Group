@@ -88,6 +88,7 @@ static void pcs_deactivate(struct pcs* p, int exit_status){
   /* Close all open files. */
   struct process* pcb = p->pcb;
   lock_acquire(&pcb->ftlock);
+  struct list_elem* e;
   for (e = list_begin (&pcb->file_table); e != list_end (&pcb->file_table); e = list_next (e)){
     struct file_d* f = list_entry(e, struct file_d, elem);
     file_close(f->file);
