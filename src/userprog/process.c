@@ -82,8 +82,11 @@ static void pcs_deactivate(struct pcs* p, int exit_status){
   
   /* Allow write to exefile. */
   struct file* f = filesys_open(p->pcb->process_name);
-  file_allow_write(f);
-  file_close(f);
+  //First Process doesnt have a exefile.
+  if(f != NULL){
+    file_allow_write(f);
+    file_close(f);
+  }
 
   /* Close all open files. */
   struct process* pcb = p->pcb;
@@ -142,6 +145,8 @@ void userprog_init(void) {
   /* Kill the kernel if we did not succeed */
   ASSERT(success);
 	t->pcb->main_thread = t;
+  list_init(&t->pcb->file_table);
+  lock_init(&t->pcb->ftlock);
 	pcs_add(p, t->tid, t->pcb, NULL, PROCESS_ALIVE);
 }
 

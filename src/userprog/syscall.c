@@ -125,9 +125,14 @@ unsigned tell(int fd){
 }
 
 void close(int fd){
-  struct file* f = get_file(fd);
+  struct file_d* f = get_file_d(fd);
+  struct process* pcb = thread_current()->pcb;
   if(f == NULL) return ;
-  file_close(f);
+  file_close(f->file);
+  lock_acquire(&pcb->ftlock);
+  list_remove(&f->elem);
+  lock_release(&pcb->ftlock);
+  free(f);
 }
 
 static void syscall_handler(struct intr_frame* f UNUSED) {
