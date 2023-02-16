@@ -44,7 +44,8 @@ static bool load(const char* file_name, void (**eip)(void), void** esp);
 bool setup_thread(void (**eip)(void), void** esp);
 static void pcs_add(struct pcs* p, pid_t pid, struct process* pcb, struct process* parent, enum process_status state);
 static struct pcs* get_pcs(pid_t pid);
-static void pcs_deactivate(struct pcs* p, int exit_status);
+static bool pcs_deactivate(struct pcs* p, int exit_status);
+static void pcs_release(struct pcs* p);
 
 // Find the pcs corresponding to the given pid, return NULL if cannot find
 static struct pcs* get_pcs(pid_t pid){
@@ -76,16 +77,30 @@ static void pcs_add(struct pcs* p, pid_t pid, struct process* pcb, struct proces
   intr_set_level(old_level);
 }
 
-/* Deactivate a pcs, used when a process exit or is killed. */
-static void pcs_deactivate(struct pcs* p, int exit_status){
+static void pcs_release(struct pcs* p){
+  enum intr_level old_level = intr_disable();
+  list_remove(&p->allelem);
+  intr_set_level(old_level);
+
+  struct list_elem *e;
+  for (e = list_begin (&all_process); e != list_end (&all_process); e = list_next (e)){
+    struct pcs* itr = list_entry(e, struct pcs, allelem);
+    if(itr->parent == p->pcb)
+      itr->parent = NULL;
+  }
+  free(p);
+}
+
+/* Deactivate a pcs, used when a process exit or is killed. 
+  Return true if p is released. */
+static bool pcs_deactivate(struct pcs* p, int exit_status){
 	ASSERT(p != NULL);
   
   /* Allow write to exefile. */
-  struct file* f = filesys_open(p->pcb->process_name);
   //First Process doesnt have a exefile.
-  if(f != NULL){
-    file_allow_write(f);
-    file_close(f);
+  if(p->pcb->exefile != NULL){
+    file_allow_write(p->pcb->exefile);
+    file_close(p->pcb->exefile);
   }
 
   /* Close all open files. */
@@ -104,23 +119,14 @@ static void pcs_deactivate(struct pcs* p, int exit_status){
 /* A PCS can be released when its parent is also dead.
 	i.e. when its exit information is no longer required. */
 	if(!p->parent || get_pcs(get_pid(p->parent))->state == PROCESS_DEAD){
-		enum intr_level old_level = intr_disable();
-		list_remove(&p->allelem);
-		intr_set_level(old_level);
-
-		struct list_elem *e;
-		for (e = list_begin (&all_process); e != list_end (&all_process); e = list_next (e)){
-			struct pcs* itr = list_entry(e, struct pcs, allelem);
-			if(itr->parent == p->pcb)
-				itr->parent = NULL;
-		}
-		free(p);
-		return ;
-	}
+    pcs_release(p);
+    return true;
+  }
 
 	p->pcb = NULL;
 	p->exit_status = exit_status;
 	p->state = PROCESS_DEAD;
+  return false;
 }
 
 /* Initializes user programs in the system by ensuring the main
@@ -145,6 +151,7 @@ void userprog_init(void) {
   /* Kill the kernel if we did not succeed */
   ASSERT(success);
 	t->pcb->main_thread = t;
+  t->pcb->exefile = NULL;
   list_init(&t->pcb->file_table);
   lock_init(&t->pcb->ftlock);
 	pcs_add(p, t->tid, t->pcb, NULL, PROCESS_ALIVE);
@@ -346,24 +353,26 @@ int process_wait(pid_t child_pid) {
 	/* Find child process in all list */
 	p = get_pcs(child_pid);
 	// Invalid or is not a child
-	if(p == NULL && p->parent != t->pcb)
+	if(p == NULL || p->parent != t->pcb)
 		return -1;
 
-	if(p->state == PROCESS_DEAD)
-		return p->exit_status;
+  /* Wait for child. */
+	if(p->state != PROCESS_DEAD){
+    /* Avoid bad concurrency. ensure only one thread waits for PID. */
+    enum intr_level old_level = intr_disable();
+    if(p->is_waited)
+      return -1;
+    else 
+      p->is_waited = true;
+    intr_set_level(old_level);
 
-	/* Avoid bad concurrency. ensure only one thread waits for PID. */
-  enum intr_level old_level = intr_disable();
-	if(p->is_waited)
-		return -1;
-	else 
-		p->is_waited = true;
-  intr_set_level(old_level);
+    sema_down(&p->lock);
+    p->is_waited = false;
+  }
 
-	sema_down(&p->lock);
-	p->is_waited = false;
-
-  return p->exit_status;
+  int status = p->exit_status;
+  pcs_release(p);
+  return status;
 }
 
 /* Free the current process's resources. */
@@ -399,13 +408,17 @@ void process_exit(int status) {
      can try to activate the pagedir, but it is now freed memory */
 
 	pid_t pid = get_pid(cur->pcb);
-	pcs_deactivate(get_pcs(pid), status);
+  struct pcs* p = get_pcs(pid);
+  // Current process definitly has a PCS.
+  ASSERT(p);
+	bool released = pcs_deactivate(p, status);
+  if(!released)
+    sema_up(&p->lock);
 
   struct process* pcb_to_free = cur->pcb;
   cur->pcb = NULL;
   free(pcb_to_free);
 
-  sema_up(&get_pcs(pid)->lock);
   thread_exit();
 }
 
@@ -585,8 +598,10 @@ bool load(const char* file_name, void (**eip)(void), void** esp) {
 
 done:
   /* We arrive here whether the load is successful or not. */
-  if(success)
+  if(success){
+    t->pcb->exefile = file_reopen(file);
     file_deny_write(file);
+  }
   file_close(file);
   return success;
 }

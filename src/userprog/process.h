@@ -36,6 +36,7 @@ struct process {
   struct thread* main_thread; /* Pointer to main thread */
   struct list file_table;     /* File table. */
   struct lock ftlock;         /* Lock for File table. */
+  struct file* exefile;       /* Executable file of this process */
 };
 
 void userprog_init(void);

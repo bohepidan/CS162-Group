@@ -11,6 +11,8 @@
 #include "devices/input.h"
 #include "kernel/console.h"
 #include "devices/shutdown.h"
+#include "userprog/pagedir.h"
+#include "threads/vaddr.h"
 
 static void syscall_handler(struct intr_frame*);
 
@@ -18,6 +20,28 @@ void syscall_init(void) { intr_register_int(0x30, 3, INTR_ON, syscall_handler, "
 
 static struct file_d* get_file_d(int fd);
 static struct file* get_file(int fd);
+static void usrptr_handler(const void* ptr);
+static void exit(int status);
+static int open(const char* name);
+static int filesize(int fd);
+static int read(int fd, void* buffer, unsigned size);
+static int write(int fd, const void* buffer, unsigned size);
+static unsigned tell(int fd);
+static void close(int fd);
+static void seek(int fd, unsigned position);
+
+static void usrptr_handler(const void* ptr){
+  struct process* pcb = thread_current()->pcb;
+  // Invalid ptr, exit(-1).
+  if(ptr == NULL || !is_user_vaddr(ptr) || !pagedir_get_page(pcb->pagedir, ptr))
+    exit(-1);
+}
+
+static void exit(int status){
+  printf("%s: exit(%d)\n", thread_current()->pcb->process_name, status);
+  process_exit(status);
+  NOT_REACHED();
+}
 
 // Return the file_d structure of fd, or NULL if fd not exist.
 static struct file_d* get_file_d(int fd){
@@ -46,7 +70,9 @@ static struct file* get_file(int fd){
 /* Opens the file named file. Returns a nonnegative
  integer handle called a “file descriptor” (fd), or -1
   if the file could not be opened. */
-int open(const char* name) {
+static int open(const char* name) {
+  usrptr_handler(name);
+
   struct process* pcb = thread_current()->pcb;
 
   struct file* file = filesys_open(name);
@@ -70,7 +96,7 @@ int open(const char* name) {
 
 /* Returns the size, in bytes, of the open file with file descriptor fd.
   or return -1 if fd not exist. */
-int filesize(int fd){
+static int filesize(int fd){
   struct file* file = get_file(fd);
   if(file == NULL) return -1;
 
@@ -80,7 +106,8 @@ int filesize(int fd){
 /* Reads size bytes from the file open as fd into buffer.
   Returns the number of bytes actually read (0 at end of file), 
   or -1 if the file could not be read (due to a condition other than end of file).*/
-int read(int fd, void* buffer, unsigned size){
+static int read(int fd, void* buffer, unsigned size){
+  usrptr_handler(buffer);
   // Read from stdin.
   if(fd == STDIN_FILENO){
     for(uint8_t* c = buffer; c < (uint8_t*)buffer+size; c++){
@@ -97,7 +124,8 @@ int read(int fd, void* buffer, unsigned size){
 
 /* Writes size bytes from buffer to the open file with file descriptor fd.
   Returns the number of bytes actually written, or -1 if failed. */
-int write(int fd, const void* buffer, unsigned size){
+static int write(int fd, const void* buffer, unsigned size){
+  usrptr_handler(buffer);
   if(fd == STDOUT_FILENO){
     putbuf(buffer, size);
     return size;
@@ -112,19 +140,19 @@ int write(int fd, const void* buffer, unsigned size){
 /*Changes the next byte to be read or written in 
  open file fd to position, expressed in bytes from the beginning of the file. 
  Thus, a position of 0 is the file’s start. */
-void seek(int fd, unsigned position){
+static void seek(int fd, unsigned position){
   struct file* f = get_file(fd);
   if(f == NULL) return ;
   file_seek(f, position);
 }
 
-unsigned tell(int fd){
+static unsigned tell(int fd){
   struct file* f = get_file(fd);
   if(f == NULL) return 0;
   return file_tell(f);
 }
 
-void close(int fd){
+static void close(int fd){
   struct file_d* f = get_file_d(fd);
   struct process* pcb = thread_current()->pcb;
   if(f == NULL) return ;
@@ -148,9 +176,7 @@ static void syscall_handler(struct intr_frame* f UNUSED) {
   //printf("System call number: %d\n", args[0]);
 
   if (args[0] == SYS_EXIT) {
-    f->eax = args[1];
-    printf("%s: exit(%d)\n", thread_current()->pcb->process_name, args[1]);
-    process_exit(args[1]);
+    exit(args[1]);
   }
   else if (args[0] == SYS_PRACTICE) {
     f->eax = args[1] + 1;
@@ -160,6 +186,7 @@ static void syscall_handler(struct intr_frame* f UNUSED) {
   }
   else if (args[0] == SYS_EXEC) {
     const char* cmd_line = (char*)args[1];
+    usrptr_handler(cmd_line);
     f->eax = process_execute(cmd_line);
   }
   else if (args[0] == SYS_WAIT) {
@@ -169,10 +196,12 @@ static void syscall_handler(struct intr_frame* f UNUSED) {
   else if (args[0] == SYS_CREATE) {
     const char* file = (char*)args[1];
     unsigned initial_size = args[2];
+    usrptr_handler(file);
     f->eax = filesys_create(file, initial_size);
   }
   else if (args[0] == SYS_REMOVE) {
     const char* file = (char*)args[1];
+    usrptr_handler(file);
     f->eax = filesys_remove(file);
   }
   else if (args[0] == SYS_OPEN) {
