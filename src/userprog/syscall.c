@@ -107,13 +107,13 @@ static int open(const char* name) {
   if (newfd == NULL) return -1;
 
   newfd->file = file;
+  lock_acquire(&pcb->ftlock);
   if (list_empty(&pcb->file_table)) {
     newfd->fd = 2;
   }else{
     struct file_d* back = list_entry(list_back(&pcb->file_table), struct file_d, elem);
     newfd->fd = back->fd + 1;
   }
-  lock_acquire(&pcb->ftlock);
   list_push_back(&pcb->file_table, &newfd->elem);
   lock_release(&pcb->ftlock);
   return newfd->fd;
