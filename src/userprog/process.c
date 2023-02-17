@@ -188,8 +188,13 @@ pid_t process_execute(const char* file_name) {
   tid = thread_create(file_name, PRI_DEFAULT, start_process, &aux);
   if (tid == TID_ERROR)
     palloc_free_page(fn_copy);
-	else
+	else{
 		sema_down(&lock);
+    /* Exec failed(or user pass exit status -1, This functions correctly anyway).
+      fn_copy is already released. */
+    if(get_pcs(tid)->state == PROCESS_DEAD && get_pcs(tid)->exit_status == -1)
+      return -1;
+  }
   return tid;
 }
 
@@ -305,16 +310,6 @@ static void start_process(void* aux) {
 		sema_up(lock);
   }
 
-  /* Handle failure with succesful PCB malloc. Must free the PCB */
-  if (!success && pcb_success) {
-    // Avoid race where PCB is freed before t->pcb is set to NULL
-    // If this happens, then an unfortuantely timed timer interrupt
-    // can try to activate the pagedir, but it is now freed memory
-    struct process* pcb_to_free = t->pcb;
-    t->pcb = NULL;
-    free(pcb_to_free);
-  }
-
   /* Clean up. Exit on failure or jump to userspace */
   free(exefile);
   palloc_free_page(file_name);
@@ -322,6 +317,15 @@ static void start_process(void* aux) {
 		//Not success, deactivate current process and quit exec().
 		struct pcs* p = get_pcs(t->tid);
 		pcs_deactivate(p, -1);
+  /* Handle failure with succesful PCB malloc. Must free the PCB */
+    if(pcb_success){
+      // Avoid race where PCB is freed before t->pcb is set to NULL
+      // If this happens, then an unfortuantely timed timer interrupt
+      // can try to activate the pagedir, but it is now freed memory
+      struct process* pcb_to_free = t->pcb;
+      t->pcb = NULL;
+      free(pcb_to_free);
+    }
 		sema_up(lock);
 		sema_up(&p->lock);
     thread_exit();
@@ -598,10 +602,12 @@ bool load(const char* file_name, void (**eip)(void), void** esp) {
 
 done:
   /* We arrive here whether the load is successful or not. */
-  if(success){
+  if(file != NULL){
     t->pcb->exefile = file_reopen(file);
-    file_deny_write(file);
-  }
+    file_deny_write(t->pcb->exefile);
+  }else
+    t->pcb->exefile = NULL;
+  
   file_close(file);
   return success;
 }

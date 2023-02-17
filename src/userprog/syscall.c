@@ -20,7 +20,7 @@ void syscall_init(void) { intr_register_int(0x30, 3, INTR_ON, syscall_handler, "
 
 static struct file_d* get_file_d(int fd);
 static struct file* get_file(int fd);
-static void usrptr_handler(const void* ptr);
+static void usrptr_handler(const void* ptr, bool is_str, int size);
 static void exit(int status);
 static int open(const char* name);
 static int filesize(int fd);
@@ -29,12 +29,37 @@ static int write(int fd, const void* buffer, unsigned size);
 static unsigned tell(int fd);
 static void close(int fd);
 static void seek(int fd, unsigned position);
+static bool usrptr_is_invalid(const void* ptr);
 
-static void usrptr_handler(const void* ptr){
-  struct process* pcb = thread_current()->pcb;
-  // Invalid ptr, exit(-1).
-  if(ptr == NULL || !is_user_vaddr(ptr) || !pagedir_get_page(pcb->pagedir, ptr))
+static bool usrptr_is_invalid(const void* ptr){
+  return ptr == NULL || !is_user_vaddr(ptr) || !pagedir_get_page(thread_current()->pcb->pagedir, ptr);
+}
+
+/* User pointer handler.
+  is_str: True if ptr points to a string
+  size: The elem size ptr points to. */
+static void usrptr_handler(const void* ptr, bool is_str, int size){
+  if(is_str){
+    char* p = (char*)ptr;
+    while(!usrptr_is_invalid(p)){
+      if(*p == '\0')
+        return ;
+      else 
+        p++;
+    }
+    // Found p invalid before it reaches \0.
     exit(-1);
+  }else{
+    // Ptr elem across two pages.
+    if(((uintptr_t)ptr & PGMASK) > (uintptr_t)0xfff - size){
+      for(void* p = (void*)ptr; p < ptr+size; p++)
+        if(usrptr_is_invalid(p))
+          exit(-1);
+    }else{
+      if(usrptr_is_invalid(ptr))
+        exit(-1);
+    }
+  }
 }
 
 static void exit(int status){
@@ -71,7 +96,7 @@ static struct file* get_file(int fd){
  integer handle called a “file descriptor” (fd), or -1
   if the file could not be opened. */
 static int open(const char* name) {
-  usrptr_handler(name);
+  usrptr_handler(name, true, sizeof(char));
 
   struct process* pcb = thread_current()->pcb;
 
@@ -107,7 +132,7 @@ static int filesize(int fd){
   Returns the number of bytes actually read (0 at end of file), 
   or -1 if the file could not be read (due to a condition other than end of file).*/
 static int read(int fd, void* buffer, unsigned size){
-  usrptr_handler(buffer);
+  usrptr_handler(buffer, false, sizeof(char));
   // Read from stdin.
   if(fd == STDIN_FILENO){
     for(uint8_t* c = buffer; c < (uint8_t*)buffer+size; c++){
@@ -125,7 +150,7 @@ static int read(int fd, void* buffer, unsigned size){
 /* Writes size bytes from buffer to the open file with file descriptor fd.
   Returns the number of bytes actually written, or -1 if failed. */
 static int write(int fd, const void* buffer, unsigned size){
-  usrptr_handler(buffer);
+  usrptr_handler(buffer, false, sizeof(char));
   if(fd == STDOUT_FILENO){
     putbuf(buffer, size);
     return size;
@@ -174,66 +199,80 @@ static void syscall_handler(struct intr_frame* f UNUSED) {
    */
 
   //printf("System call number: %d\n", args[0]);
+  usrptr_handler(args, false, sizeof(uint32_t));
 
   if (args[0] == SYS_EXIT) {
+    usrptr_handler(args+1, false, sizeof(uint32_t));
     exit(args[1]);
   }
   else if (args[0] == SYS_PRACTICE) {
+    usrptr_handler(args+1, false, sizeof(uint32_t));
     f->eax = args[1] + 1;
   }
   else if (args[0] == SYS_HALT) {
     shutdown_power_off();
   }
   else if (args[0] == SYS_EXEC) {
+    usrptr_handler(args+1, false, sizeof(uint32_t));
     const char* cmd_line = (char*)args[1];
-    usrptr_handler(cmd_line);
+    usrptr_handler(cmd_line, true, sizeof(char));
     f->eax = process_execute(cmd_line);
   }
   else if (args[0] == SYS_WAIT) {
+    usrptr_handler(args+1, false, sizeof(uint32_t));
     pid_t pid = args[1];
     f->eax = process_wait(pid);
   }
   else if (args[0] == SYS_CREATE) {
+    usrptr_handler(args+1, false, sizeof(uint32_t)*2);
     const char* file = (char*)args[1];
     unsigned initial_size = args[2];
-    usrptr_handler(file);
+    usrptr_handler(file, true, sizeof(char));
     f->eax = filesys_create(file, initial_size);
   }
   else if (args[0] == SYS_REMOVE) {
+    usrptr_handler(args+1, false, sizeof(uint32_t));
     const char* file = (char*)args[1];
-    usrptr_handler(file);
+    usrptr_handler(file, true, sizeof(char));
     f->eax = filesys_remove(file);
   }
   else if (args[0] == SYS_OPEN) {
+    usrptr_handler(args+1, false, sizeof(uint32_t));
     const char* file = (char*)args[1];
     f->eax = open(file);
   }
   else if (args[0] == SYS_FILESIZE){
+    usrptr_handler(args+1, false, sizeof(uint32_t));
     int fd = args[1];
     f->eax = filesize(fd);
   }
   else if (args[0] == SYS_READ){
+    usrptr_handler(args+1, false, sizeof(uint32_t));
     int fd = args[1];
     void* buffer = (void*)args[2];
     unsigned size = args[3];
     f->eax = read(fd, buffer, size);
   }
   else if (args[0] == SYS_WRITE){
+    usrptr_handler(args+1, false, sizeof(uint32_t)*3);
     int fd = args[1];
     const void* buffer = (void*)args[2];
     unsigned size = args[3];
     f->eax = write(fd, buffer, size);
   }
   else if (args[0] == SYS_SEEK){
+    usrptr_handler(args+1, false, sizeof(uint32_t)*2);
     int fd = args[1];
     unsigned position = args[2];
     seek(fd, position);
   }
   else if (args[0] == SYS_TELL){
+    usrptr_handler(args+1, false, sizeof(uint32_t));
     int fd = args[1];
     f->eax = tell(fd);
   }
   else if (args[0] == SYS_CLOSE){
+    usrptr_handler(args+1, false, sizeof(uint32_t));
     int fd = args[1];
     close(fd);
   }
