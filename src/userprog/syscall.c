@@ -13,6 +13,7 @@
 #include "devices/shutdown.h"
 #include "userprog/pagedir.h"
 #include "threads/vaddr.h"
+#include "lib/float.h"
 
 static void syscall_handler(struct intr_frame*);
 
@@ -275,6 +276,10 @@ static void syscall_handler(struct intr_frame* f UNUSED) {
     usrptr_handler(args+1, false, sizeof(uint32_t));
     int fd = args[1];
     close(fd);
+  }
+  else if (args[0] == SYS_COMPUTE_E){
+    usrptr_handler(args+1, false, sizeof(uint32_t));
+    f->eax = sys_sum_to_e(args[1]);
   }
 
 }

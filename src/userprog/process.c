@@ -297,6 +297,10 @@ static void start_process(void* aux) {
   /* Initialize interrupt frame and load executable. */
   if (success) {
     memset(&if_, 0, sizeof if_);
+    //Set the FPU
+    char FPU[108];
+    asm volatile("fsave %0; finit; fsave %1; frstor %0": "=g"(FPU), "=g"(if_.FPU));
+
     if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
     if_.cs = SEL_UCSEG;
     if_.eflags = FLAG_IF | FLAG_MBS;

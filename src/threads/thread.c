@@ -206,6 +206,9 @@ tid_t thread_create(const char* name, int priority, thread_func* function, void*
   sf->eip = switch_entry;
   sf->ebp = 0;
 
+  char FPU[108];
+  asm volatile("fsave %0; finit; fsave %1; frstor %0": "=g"(FPU), "=g"(sf->FPU));
+
   /* Add to run queue. */
   thread_unblock(t);
 
